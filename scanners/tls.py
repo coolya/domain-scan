@@ -15,22 +15,68 @@ import os
 
 
 command = os.environ.get("SSLLABS_PATH", "ssllabs-scan")
-init = None
 
+all_domains = None
 
-def scan(domain, options):
-    logging.debug("[%s][tls]" % domain)
+def init(options, domains):
+    global all_domains
+    all_domains = domains
 
-    # If inspection data exists, check to see if we can skip.
-    inspection = utils.data_for(domain, "inspect")
-    if inspection and (not inspection.get("support_https")):
-        logging.debug("\tSkipping, HTTPS not supported in inspection.")
-        yield None
+def get_data(data):
+    domain = data['host']
+    cache = utils.cache_path(domain, "tls")
+    # if SSL Labs had an error hitting the site, cache this
+    # as an invalid entry.
+    if data["status"] == "ERROR":
+        utils.write(utils.invalid(data), cache)
+        return None
 
-    else:
-        # cache reformatted JSON from ssllabs
+    utils.write(utils.json_for(data), cache)
+    # can return multiple rows, one for each 'endpoint'
+    for endpoint in data['endpoints']:
+
+        # this meant it couldn't connect to the endpoint
+        if not endpoint.get("grade"):
+            continue
+
+        sslv3 = False
+        tlsv12 = False
+        for protocol in endpoint['details']['protocols']:
+            if ((protocol['name'] == "SSL") and
+                    (protocol['version'] == '3.0')):
+                sslv3 = True
+            if ((protocol['name'] == "TLS") and
+                    (protocol['version'] == '1.2')):
+                tlsv12 = True
+
+        spdy = False
+        h2 = False
+        npn = endpoint['details'].get('npnProtocols', None)
+        if npn:
+            spdy = ("spdy" in npn)
+            h2 = ("h2-" in npn)
+
+        return [
+            domain,
+            endpoint['grade'],
+            endpoint['details']['cert']['sigAlg'],
+            endpoint['details']['key']['alg'],
+            endpoint['details']['key']['size'],
+            endpoint['details']['forwardSecrecy'],
+            endpoint['details']['ocspStapling'],
+            endpoint['details'].get('fallbackScsv', "N/A"),
+            endpoint['details']['supportsRc4'],
+            sslv3,
+            tlsv12,
+            spdy,
+            endpoint['details']['sniRequired'],
+            h2
+        ]
+
+def scan(options):
+
+    for domain in domains:
         cache = utils.cache_path(domain, "tls")
-
         force = options.get("force", False)
 
         if (force is False) and (os.path.exists(cache)):
@@ -39,78 +85,37 @@ def scan(domain, options):
             data = json.loads(raw)
 
             if data.get('invalid'):
-                return None
+                yield None
+            else:
+                yield get_data(data)
         else:
             logging.debug("\t %s %s" % (command, domain))
+            utils.write(("%s \n" % domain), utils.temp_path('domains.txt'))
 
-            usecache = str(not force).lower()
+    usecache = str(not force).lower()
 
-            if options.get("debug"):
-                cmd = [command, "--usecache=%s" % usecache,
-                       "--verbosity=debug", domain]
-            else:
-                cmd = [command, "--usecache=%s" % usecache,
-                       "--quiet", domain]
-            raw = utils.scan(cmd)
-            if raw:
-                data = json.loads(raw)
+    if options.get("debug"):
+        cmd = [command, "--usecache=%s" % usecache,
+               "--verbosity=debug", ("""--hostfile="%s""" % utils.temp_path('domains.txt'))]
+    else:
+        cmd = [command, "--usecache=%s" % usecache,
+               "--quiet", ("""--hostfile="%s""" % utils.temp_path('domains.txt'))]
+    raw = utils.scan(cmd)
 
-                # we only give ssllabs-scan one at a time,
-                # so we can de-pluralize this
-                data = data[0]
+    if raw:
+        data = json.loads(raw)
 
-                # if SSL Labs had an error hitting the site, cache this
-                # as an invalid entry.
-                if data["status"] == "ERROR":
-                    utils.write(utils.invalid(data), cache)
-                    return None
+        # We get an array of data from ssllabs-scan
+        # They are not in the same order as we requested them
+        for domain_data in data:
+            yield get_data(domain_data)
 
-                utils.write(utils.json_for(data), cache)
-            else:
-                return None
-                # raise Exception("Invalid data from ssllabs-scan: %s" % raw)
-
-        # can return multiple rows, one for each 'endpoint'
-        for endpoint in data['endpoints']:
-
-            # this meant it couldn't connect to the endpoint
-            if not endpoint.get("grade"):
-                continue
-
-            sslv3 = False
-            tlsv12 = False
-            for protocol in endpoint['details']['protocols']:
-                if ((protocol['name'] == "SSL") and
-                        (protocol['version'] == '3.0')):
-                    sslv3 = True
-                if ((protocol['name'] == "TLS") and
-                        (protocol['version'] == '1.2')):
-                    tlsv12 = True
-
-            spdy = False
-            h2 = False
-            npn = endpoint['details'].get('npnProtocols', None)
-            if npn:
-                spdy = ("spdy" in npn)
-                h2 = ("h2-" in npn)
-
-            yield [
-                endpoint['grade'],
-                endpoint['details']['cert']['sigAlg'],
-                endpoint['details']['key']['alg'],
-                endpoint['details']['key']['size'],
-                endpoint['details']['forwardSecrecy'],
-                endpoint['details']['ocspStapling'],
-                endpoint['details'].get('fallbackScsv', "N/A"),
-                endpoint['details']['supportsRc4'],
-                sslv3,
-                tlsv12,
-                spdy,
-                endpoint['details']['sniRequired'],
-                h2
-            ]
-
+    else:
+        yield None
+        # raise Exception("Invalid data from ssllabs-scan: %s" % raw)
+            
 headers = [
+    "Domain", # order is no longer guaranteed due bulk scanning
     "Grade",  # unique to SSL Labs
     "Signature Algorithm", "Key Type", "Key Size",  # strength
     "Forward Secrecy", "OCSP Stapling",  # privacy
