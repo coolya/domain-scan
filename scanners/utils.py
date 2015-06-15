@@ -103,6 +103,12 @@ def report_dir():
 def cache_dir():
     return os.path.join(report_dir(), "cache")
 
+def temp_dir():
+    return os.path.join(report_dir(), "tmp")
+
+def temp_path(name):
+    return os.path.abspath(os.path.join(temp_dir(), ("%s" % name)))
+
 def results_dir():
     return os.path.join(report_dir(), "results")
 

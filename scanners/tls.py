@@ -13,7 +13,6 @@ import os
 # and only process domains with valid HTTPS, or broken chains.
 ###
 
-
 command = os.environ.get("SSLLABS_PATH", "ssllabs-scan")
 
 all_domains = None
@@ -21,6 +20,7 @@ all_domains = None
 def init(options, domains):
     global all_domains
     all_domains = domains
+    return True
 
 def get_data(data):
     domain = data['host']
@@ -74,8 +74,8 @@ def get_data(data):
         ]
 
 def scan(options):
-
-    for domain in domains:
+    logging.debug("scanning tls")
+    for domain in all_domains:
         cache = utils.cache_path(domain, "tls")
         force = options.get("force", False)
 
@@ -94,15 +94,18 @@ def scan(options):
 
     usecache = str(not force).lower()
 
+    logging.debug(open(utils.temp_path('domains.txt')).read())
+
     if options.get("debug"):
         cmd = [command, "--usecache=%s" % usecache,
-               "--verbosity=debug", ("""--hostfile="%s""" % utils.temp_path('domains.txt'))]
+               "--verbosity=debug", ("""--hostfile=%s""" % utils.temp_path('domains.txt'))]
     else:
         cmd = [command, "--usecache=%s" % usecache,
-               "--quiet", ("""--hostfile="%s""" % utils.temp_path('domains.txt'))]
+               "--quiet", ("""--hostfile=%s""" % utils.temp_path('domains.txt'))]
     raw = utils.scan(cmd)
 
     if raw:
+        logging.debug("raw: %s" % raw)
         data = json.loads(raw)
 
         # We get an array of data from ssllabs-scan
